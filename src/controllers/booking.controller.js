@@ -1,73 +1,74 @@
 const Booking = require('../models/booking.model');
-const { Hostel } = require('../models/hostel.model');
+const  Hostel  = require('../models/hostel.model');
 const Payment = require('../models/payment.model');
 const User = require('../models/user.model');
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const sendMail = require('../utils/mailer');
-const { asyncHandler } = require('../utils/asyncHandler');
-const ApiError = require('../utils/ApiError');
 
-const createBooking = asyncHandler(async (req, res) => {
-  const { hostelId, firstName, lastName, email, phone, moveInDate, message } = req.body;
-
-  if (!hostelId || !firstName || !lastName || !email || !phone || !moveInDate) {
-    throw new ApiError(400, 'All required fields must be provided');
-  }
-
-  const hostel = await Hostel.findById(hostelId);
-  if (!hostel) {
-    throw new ApiError(404, 'Hostel not found');
-  }
-
-  const booking = new Booking({
-    userId: req.user._id,
-    hostelId,
-    firstName,
-    lastName,
-    email,
-    phone,
-    moveInDate,
-    message,
-  });
-
-  await booking.save();
-
-  res.status(201).json({
-    success: true,
-    message: 'Booking saved successfully',
-    bookingId: booking._id,
-  });
-});
-
-const processPayment = asyncHandler(async (req, res) => {
-  const { bookingId, paymentMethodId } = req.body;
-
-  if (!bookingId || !paymentMethodId) {
-    throw new ApiError(400, 'Booking ID and payment method ID are required');
-  }
-
-  const booking = await Booking.findById(bookingId)
-    .populate('hostelId')
-    .populate('userId');
-  if (!booking) {
-    throw new ApiError(404, 'Booking not found');
-  }
-
-  if (booking.userId._id.toString() !== req.user._id.toString()) {
-    throw new ApiError(403, 'Unauthorized access to this booking');
-  }
-
+const createBooking = async (req, res) => {
   try {
+    const { hostelId, firstName, lastName, email, phone, moveInDate, message } = req.body;
+
+    if (!hostelId || !firstName || !lastName || !email || !phone || !moveInDate) {
+      return res.status(400).json({ success: false, message: 'All required fields must be provided' });
+    }
+
+    const hostel = await Hostel.findById(hostelId);
+    if (!hostel) {
+      return res.status(404).json({ success: false, message: 'Hostel not found' });
+    }
+
+    const booking = new Booking({
+      userId: req.user._id,
+      hostelId,
+      firstName,
+      lastName,
+      email,
+      phone,
+      moveInDate,
+      message,
+    });
+
+    await booking.save();
+
+    res.status(201).json({
+      success: true,
+      message: 'Booking saved successfully',
+      bookingId: booking._id,
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message || 'Server error' });
+  }
+};
+
+const processPayment = async (req, res) => {
+  try {
+    const { bookingId, paymentMethodId } = req.body;
+
+    if (!bookingId || !paymentMethodId) {
+      return res.status(400).json({ success: false, message: 'Booking ID and payment method ID are required' });
+    }
+
+    const booking = await Booking.findById(bookingId).populate('hostelId').populate('userId');
+    if (!booking) {
+      return res.status(404).json({ success: false, message: 'Booking not found' });
+    }
+
+    if (booking.userId._id.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ success: false, message: 'Unauthorized access to this booking' });
+    }
+
     const paymentIntent = await stripe.paymentIntents.create(
       {
-        amount: 25000 * 100, // Amount in paisa (PKR)
+        amount: 25000 * 100, // amount in paisa (PKR)
         currency: 'pkr',
         payment_method: paymentMethodId,
         confirmation_method: 'manual',
         confirm: true,
+        return_url: 'https://your-frontend-return-url.com', // add a valid return_url for redirect-based payments
       },
       {
-        idempotencyKey: bookingId.toString(), // Prevents double charges
+        idempotencyKey: bookingId.toString(),
       }
     );
 
@@ -84,7 +85,7 @@ const processPayment = asyncHandler(async (req, res) => {
     }
 
     if (paymentIntent.status !== 'succeeded') {
-      throw new ApiError(400, 'Payment failed');
+      return res.status(400).json({ success: false, message: 'Payment failed' });
     }
 
     const payment = new Payment({
@@ -122,19 +123,24 @@ const processPayment = asyncHandler(async (req, res) => {
       paymentId: payment._id,
     });
   } catch (err) {
-    await new Payment({
-      userId: req.user._id,
-      hostelId: booking.hostelId._id,
-      bookingId: booking._id,
-      amount: 25000,
-      paymentMethod: 'Stripe',
-      status: 'failed',
-      transactionId: err.payment_intent?.id || 'N/A',
-    }).save();
+    // Save failed payment attempt
+    try {
+      await new Payment({
+        userId: req.user._id,
+        hostelId: req.body.hostelId,
+        bookingId: req.body.bookingId,
+        amount: 25000,
+        paymentMethod: 'Stripe',
+        status: 'failed',
+        transactionId: err.payment_intent?.id || 'N/A',
+      }).save();
+    } catch (saveError) {
+      console.error('Error saving failed payment:', saveError);
+    }
 
-    throw new ApiError(500, err.message || 'Payment processing failed');
+    res.status(500).json({ success: false, message: err.message || 'Payment processing failed' });
   }
-});
+};
 
 module.exports = {
   createBooking,
