@@ -52,4 +52,4 @@ hostelSchema.index({ location: "2dsphere" });
 
 
 const Hostel = mongoose.model("Hostel", hostelSchema);
-module.exports = { Hostel };
+module.exports = Hostel;
